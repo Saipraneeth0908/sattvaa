@@ -32,6 +32,9 @@ const GRAIN_TYPES = [
 ]
 
 function uid() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID()
+  }
   return Math.random().toString(36).slice(2, 10)
 }
 
@@ -105,6 +108,14 @@ function exportJson(data) {
   a.download = 'batters-production-data.json'
   a.click()
   URL.revokeObjectURL(url)
+}
+
+function parseJson(value) {
+  try {
+    return JSON.parse(value || '')
+  } catch {
+    return null
+  }
 }
 
 function MetricCard({ title, value, subtitle, icon: Icon }) {
@@ -750,6 +761,279 @@ export default function App() {
 
   const [selectedDayId, setSelectedDayId] = useState(null)
   const [activeTab, setActiveTab] = useState('dashboard')
+  const [saveMessage, setSaveMessage] = useState('')
+  const [saveLoading, setSaveLoading] = useState(false)
+
+  const selectedDay = appState.productionDays.find((d) => d.id === selectedDayId) || appState.productionDays[0] || null
+
+  const packagingUsage = selectedDay ? getPackagingInventoryUsage(selectedDay) : null
+  const inventoryAfterPackaging = packagingUsage
+    ? {
+        containers30: Math.max(0, appState.inventory.containers30 - packagingUsage.containers30),
+        containers60: Math.max(0, appState.inventory.containers60 - packagingUsage.containers60),
+        lids30: Math.max(0, appState.inventory.lids30 - packagingUsage.lids30),
+        lids60: Math.max(0, appState.inventory.lids60 - packagingUsage.lids60),
+        cases30: Math.max(0, appState.inventory.cases30 - packagingUsage.cases30),
+        cases60: Math.max(0, appState.inventory.cases60 - packagingUsage.cases60),
+      }
+    : null
+
+  const updateSelectedDay = useCallback(
+    (updater) => {
+      if (!selectedDay) return
+      setAppState((prev) => ({
+        ...prev,
+        productionDays: prev.productionDays.map((day) => (day.id === selectedDay.id ? updater(day) : day)),
+      }))
+    },
+    [selectedDay]
+  )
+
+  const getPackagingInventoryUsage = useCallback(
+    (day) => {
+      const total30 = day.orders.reduce((sum, order) => sum + toNumber(order.actual30), 0)
+      const total60 = day.orders.reduce((sum, order) => sum + toNumber(order.actual60), 0)
+      return {
+        containers30: total30,
+        containers60: total60,
+        lids30: total30,
+        lids60: total60,
+        cases30: casesNeeded(total30, appState.company.casePack30),
+        cases60: casesNeeded(total60, appState.company.casePack60),
+      }
+    },
+    [appState.company.casePack30, appState.company.casePack60]
+  )
+
+  const applyInventoryDeduction = useCallback(
+    (day, inventory) => {
+      const usage = getPackagingInventoryUsage(day)
+      const nextInventory = {
+        ...inventory,
+        containers30: Math.max(0, inventory.containers30 - usage.containers30),
+        containers60: Math.max(0, inventory.containers60 - usage.containers60),
+        cases30: Math.max(0, inventory.cases30 - usage.cases30),
+        cases60: Math.max(0, inventory.cases60 - usage.cases60),
+        lids30: Math.max(0, inventory.lids30 - usage.lids30),
+        lids60: Math.max(0, inventory.lids60 - usage.lids60),
+      }
+      const transactions = []
+
+      if (usage.containers30) {
+        transactions.push({
+          inventory_item_id: null,
+          transaction_type: 'deduction',
+          item_name: '30 oz container',
+          quantity: -usage.containers30,
+          unit: 'unit',
+          notes: 'Packaged 30 oz output',
+        })
+      }
+      if (usage.containers60) {
+        transactions.push({
+          inventory_item_id: null,
+          transaction_type: 'deduction',
+          item_name: '60 oz container',
+          quantity: -usage.containers60,
+          unit: 'unit',
+          notes: 'Packaged 60 oz output',
+        })
+      }
+      if (usage.lids30) {
+        transactions.push({
+          inventory_item_id: null,
+          transaction_type: 'deduction',
+          item_name: '30 oz lid',
+          quantity: -usage.lids30,
+          unit: 'unit',
+          notes: 'Used for 30 oz packaging',
+        })
+      }
+      if (usage.lids60) {
+        transactions.push({
+          inventory_item_id: null,
+          transaction_type: 'deduction',
+          item_name: '60 oz lid',
+          quantity: -usage.lids60,
+          unit: 'unit',
+          notes: 'Used for 60 oz packaging',
+        })
+      }
+      if (usage.cases30) {
+        transactions.push({
+          inventory_item_id: null,
+          transaction_type: 'deduction',
+          item_name: '30 oz case',
+          quantity: -usage.cases30,
+          unit: 'unit',
+          notes: 'Packed 30 oz units into cases',
+        })
+      }
+      if (usage.cases60) {
+        transactions.push({
+          inventory_item_id: null,
+          transaction_type: 'deduction',
+          item_name: '60 oz case',
+          quantity: -usage.cases60,
+          unit: 'unit',
+          notes: 'Packed 60 oz units into cases',
+        })
+      }
+
+      return { nextInventory, transactions }
+    },
+    [getPackagingInventoryUsage]
+  )
+
+  const fetchProductionDays = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('production_days')
+      .select('id, production_date, status, inventory_deducted, notes')
+      .order('production_date', { ascending: false })
+
+    if (error) {
+      console.error('Failed to load production days', error)
+      return
+    }
+
+    const productionDays = (data || []).map((row) => {
+      const parsed = parseJson(row.notes) || {}
+      return {
+        ...createProductionDay(appState.company),
+        ...parsed,
+        id: row.id,
+        date: row.production_date,
+        status: row.status || 'planned',
+        inventoryDeducted: row.inventory_deducted || false,
+      }
+    })
+
+    setAppState((prev) => ({ ...prev, productionDays }))
+    if (productionDays.length && !selectedDayId) {
+      setSelectedDayId(productionDays[0].id)
+    }
+  }, [appState.company, selectedDayId])
+
+  const saveProductionDay = useCallback(async ({ completeInventory = false } = {}) => {
+    if (!selectedDay) {
+      setSaveMessage('Select a production day first.')
+      return
+    }
+
+    setSaveLoading(true)
+    setSaveMessage('')
+
+    let nextDay = selectedDay
+    let nextInventory = appState.inventory
+    let inventoryTransactions = []
+
+    if (completeInventory && !selectedDay.inventoryDeducted) {
+      const result = applyInventoryDeduction(selectedDay, appState.inventory)
+      nextInventory = result.nextInventory
+      inventoryTransactions = result.transactions
+      nextDay = {
+        ...selectedDay,
+        status: 'completed',
+        inventoryDeducted: true,
+      }
+      setAppState((prev) => ({
+        ...prev,
+        inventory: nextInventory,
+        productionDays: prev.productionDays.map((day) => (day.id === selectedDay.id ? nextDay : day)),
+      }))
+    }
+
+    const payload = {
+      production_date: nextDay.date,
+      status: nextDay.status || 'planned',
+      inventory_deducted: nextDay.inventoryDeducted || false,
+      notes: JSON.stringify({
+        orders: selectedDay.orders,
+        soakPlan: selectedDay.soakPlan,
+        rounds: selectedDay.rounds.map((round) => ({
+          roundNo: round.roundNo,
+          grinders: round.grinders.map((g) => ({
+            grinderNo: g.grinderNo,
+            productCode: g.productCode,
+            batchLabel: g.batchLabel,
+            startedAt: g.startedAt,
+            endedAt: g.endedAt,
+            waterIceSteps: g.waterIceSteps,
+            grainTransferStart: g.grainTransferStart,
+            grainTransferEnd: g.grainTransferEnd,
+            batterTransferStart: g.batterTransferStart,
+            batterTransferEnd: g.batterTransferEnd,
+            batterTemp: g.batterTemp,
+            roomTemp: g.roomTemp,
+            ph: g.ph,
+            qcTime: g.qcTime,
+            qcNotes: g.qcNotes,
+            expectedYieldLiters: g.expectedYieldLiters,
+            actualYieldLiters: g.actualYieldLiters,
+            wastageLiters: g.wastageLiters,
+            photos: g.photos,
+          })),
+        })),
+        packaging: selectedDay.packaging,
+      }),
+    }
+
+    const { data, error } = await supabase.from('production_days').upsert(payload, { onConflict: 'production_date' }).select()
+    if (error) {
+      setSaveMessage(`Save failed: ${error.message}`)
+      setSaveLoading(false)
+      return
+    }
+
+    let insertedId = selectedDay.id
+    if (data?.[0]?.id) {
+      insertedId = data[0].id
+      setAppState((prev) => ({
+        ...prev,
+        productionDays: prev.productionDays.map((day) =>
+          day.id === selectedDay.id ? { ...day, id: insertedId } : day
+        ),
+      }))
+      setSelectedDayId(insertedId)
+    }
+
+    if (inventoryTransactions.length && insertedId) {
+      await supabase.from('inventory_transactions').insert(
+        inventoryTransactions.map((tx) => ({
+          ...tx,
+          production_day_id: insertedId,
+        }))
+      )
+    }
+
+    setSaveMessage(`Saved ${nextDay.date} to Supabase.`)
+    setSaveLoading(false)
+  }, [selectedDay, appState.inventory, applyInventoryDeduction])
+
+  const deleteProductionDay = useCallback(
+    async (dayId) => {
+      const day = appState.productionDays.find((d) => d.id === dayId)
+      if (!day) return
+
+      const { error } = await supabase.from('production_days').delete().eq('production_date', day.date)
+      if (error) {
+        console.error('Delete failed', error)
+      }
+
+      setAppState((prev) => ({
+        ...prev,
+        productionDays: prev.productionDays.filter((d) => d.id !== dayId),
+      }))
+      setSelectedDayId((current) => {
+        if (current === dayId) {
+          const remaining = appState.productionDays.filter((d) => d.id !== dayId)
+          return remaining.length ? remaining[0].id : null
+        }
+        return current
+      })
+    },
+    [appState.productionDays]
+  )
 
   useEffect(() => {
     const getSession = async () => {
@@ -758,6 +1042,9 @@ export default function App() {
       } = await supabase.auth.getSession()
       setSession(session)
       setUser(session?.user ?? null)
+      if (session) {
+        await fetchProductionDays()
+      }
     }
 
     getSession()
@@ -826,6 +1113,7 @@ export default function App() {
       id: uid(),
       date: new Date().toISOString().slice(0, 10),
       status: 'planned',
+      inventoryDeducted: false,
       orders: PRODUCTS.map((p) => ({
         id: uid(),
         productCode: p.code,
@@ -999,6 +1287,7 @@ export default function App() {
                     const newDay = createProductionDay(appState.company)
                     setAppState((prev) => ({ ...prev, productionDays: [newDay, ...prev.productionDays] }))
                     setSelectedDayId(newDay.id)
+                    setSaveMessage('')
                   }}
                   className="rounded-2xl"
                 >
@@ -1006,25 +1295,45 @@ export default function App() {
                 </Button>
                 <div className="flex flex-wrap gap-2">
                   {appState.productionDays.map((day) => (
-                    <Button
-                      key={day.id}
-                      variant={selectedDayId === day.id ? 'default' : 'outline'}
-                      className="rounded-2xl"
-                      onClick={() => setSelectedDayId(day.id)}
-                    >
-                      {day.date}
-                    </Button>
+                    <div key={day.id} className="inline-flex items-center overflow-hidden rounded-2xl border bg-white shadow-sm">
+                      <Button
+                        variant={selectedDayId === day.id ? 'default' : 'outline'}
+                        className="rounded-none rounded-l-2xl"
+                        onClick={() => setSelectedDayId(day.id)}
+                      >
+                        {day.date}
+                      </Button>
+                      <button
+                        type="button"
+                        className="rounded-r-2xl border-l border-border bg-white px-2 text-slate-600 transition hover:text-red-700"
+                        onClick={() => deleteProductionDay(day.id)}
+                        title="Delete production day"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   ))}
                 </div>
               </div>
 
-              {appState.productionDays.find((d) => d.id === selectedDayId) && (
+              {!selectedDay ? (
                 <Card className="rounded-2xl">
-                  <CardHeader>
-                    <CardTitle>Order Planning</CardTitle>
+                  <CardContent className="p-6 text-slate-500">Create a new production day and capture orders, batch counts, and pre-production readiness.</CardContent>
+                </Card>
+              ) : (
+                <Card className="rounded-2xl">
+                  <CardHeader className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <CardTitle>Order Planning</CardTitle>
+                      <p className="text-sm text-slate-500">
+                        Place store orders, calculate batch counts and container requirements, and track pre-production readiness before starting rounds.
+                      </p>
+                    </div>
+                    <Button onClick={saveProductionDay} disabled={saveLoading} className="rounded-2xl">
+                      {saveLoading ? 'Saving…' : 'Save Orders & Planning'}
+                    </Button>
                   </CardHeader>
                   <CardContent>
-                    <div className="text-sm text-slate-500 mb-4">Place store orders for 30 oz and 60 oz containers, and update actual units produced.</div>
                     <div className="overflow-x-auto">
                       <Table>
                         <TableHeader>
@@ -1032,15 +1341,17 @@ export default function App() {
                             <TableHead>Product</TableHead>
                             <TableHead>30 oz Orders</TableHead>
                             <TableHead>60 oz Orders</TableHead>
+                            <TableHead>Batches</TableHead>
+                            <TableHead>Containers required</TableHead>
                             <TableHead>Actual 30 oz</TableHead>
                             <TableHead>Actual 60 oz</TableHead>
                             <TableHead>Notes</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {appState.productionDays
-                            .find((d) => d.id === selectedDayId)
-                            ?.orders.map((order) => (
+                          {selectedDay.orders.map((order) => {
+                            const batches = Math.max(1, Math.ceil(litersFromOrders(order.order30, order.order60) / appState.company.litersPerBatch))
+                            return (
                               <TableRow key={order.id}>
                                 <TableCell>
                                   {order.productCode} - {order.productName}
@@ -1049,78 +1360,167 @@ export default function App() {
                                   <Input
                                     type="number"
                                     value={order.order30}
-                                    onChange={(e) => {
-                                      setAppState((prev) => ({
-                                        ...prev,
-                                        productionDays: prev.productionDays.map((day) =>
-                                          day.id === selectedDayId
-                                            ? { ...day, orders: day.orders.map((o) => (o.id === order.id ? { ...o, order30: toNumber(e.target.value) } : o)) }
-                                            : day
-                                        ),
+                                    onChange={(e) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        orders: day.orders.map((o) => (o.id === order.id ? { ...o, order30: toNumber(e.target.value) } : o)),
                                       }))
-                                    }}
+                                    }
                                   />
                                 </TableCell>
                                 <TableCell>
                                   <Input
                                     type="number"
                                     value={order.order60}
-                                    onChange={(e) => {
-                                      setAppState((prev) => ({
-                                        ...prev,
-                                        productionDays: prev.productionDays.map((day) =>
-                                          day.id === selectedDayId ? { ...day, orders: day.orders.map((o) => (o.id === order.id ? { ...o, order60: toNumber(e.target.value) } : o)) } : day
-                                        ),
+                                    onChange={(e) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        orders: day.orders.map((o) => (o.id === order.id ? { ...o, order60: toNumber(e.target.value) } : o)),
                                       }))
-                                    }}
+                                    }
                                   />
                                 </TableCell>
+                                <TableCell>{batches}</TableCell>
+                                <TableCell>{`${order.order30 || 0} x 30 oz, ${order.order60 || 0} x 60 oz`}</TableCell>
                                 <TableCell>
                                   <Input
                                     type="number"
                                     value={order.actual30}
-                                    onChange={(e) => {
-                                      setAppState((prev) => ({
-                                        ...prev,
-                                        productionDays: prev.productionDays.map((day) =>
-                                          day.id === selectedDayId ? { ...day, orders: day.orders.map((o) => (o.id === order.id ? { ...o, actual30: toNumber(e.target.value) } : o)) } : day
-                                        ),
+                                    onChange={(e) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        orders: day.orders.map((o) => (o.id === order.id ? { ...o, actual30: toNumber(e.target.value) } : o)),
                                       }))
-                                    }}
+                                    }
                                   />
                                 </TableCell>
                                 <TableCell>
                                   <Input
                                     type="number"
                                     value={order.actual60}
-                                    onChange={(e) => {
-                                      setAppState((prev) => ({
-                                        ...prev,
-                                        productionDays: prev.productionDays.map((day) =>
-                                          day.id === selectedDayId ? { ...day, orders: day.orders.map((o) => (o.id === order.id ? { ...o, actual60: toNumber(e.target.value) } : o)) } : day
-                                        ),
+                                    onChange={(e) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        orders: day.orders.map((o) => (o.id === order.id ? { ...o, actual60: toNumber(e.target.value) } : o)),
                                       }))
-                                    }}
+                                    }
                                   />
                                 </TableCell>
                                 <TableCell>
                                   <Input
                                     value={order.notes}
-                                    onChange={(e) => {
-                                      setAppState((prev) => ({
-                                        ...prev,
-                                        productionDays: prev.productionDays.map((day) =>
-                                          day.id === selectedDayId ? { ...day, orders: day.orders.map((o) => (o.id === order.id ? { ...o, notes: e.target.value } : o)) } : day
-                                        ),
+                                    onChange={(e) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        orders: day.orders.map((o) => (o.id === order.id ? { ...o, notes: e.target.value } : o)),
                                       }))
-                                    }}
+                                    }
                                     placeholder="Notes"
                                   />
                                 </TableCell>
                               </TableRow>
-                            ))}
+                            )
+                          })}
                         </TableBody>
                       </Table>
+                    </div>
+
+                    <div className="grid gap-4 lg:grid-cols-2 mt-6">
+                      <Card className="rounded-2xl border p-4">
+                        <CardHeader>
+                          <CardTitle>Pre-production checklist</CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-4">
+                          <div className="space-y-3">
+                            <div className="flex items-center gap-3">
+                              <Checkbox
+                                checked={selectedDay.soakPlan.roWaterReady}
+                                onCheckedChange={(checked) =>
+                                  updateSelectedDay((day) => ({
+                                    ...day,
+                                    soakPlan: { ...day.soakPlan, roWaterReady: Boolean(checked) },
+                                  }))
+                                }
+                              />
+                              <span>RO water ready</span>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <Checkbox
+                                checked={selectedDay.soakPlan.containersReady}
+                                onCheckedChange={(checked) =>
+                                  updateSelectedDay((day) => ({
+                                    ...day,
+                                    soakPlan: { ...day.soakPlan, containersReady: Boolean(checked) },
+                                  }))
+                                }
+                              />
+                              <span>Containers available</span>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <Checkbox
+                                checked={selectedDay.soakPlan.casesReady}
+                                onCheckedChange={(checked) =>
+                                  updateSelectedDay((day) => ({
+                                    ...day,
+                                    soakPlan: { ...day.soakPlan, casesReady: Boolean(checked) },
+                                  }))
+                                }
+                              />
+                              <span>Cases / boxes available</span>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <Checkbox
+                                checked={selectedDay.soakPlan.grainsWashed3Times}
+                                onCheckedChange={(checked) =>
+                                  updateSelectedDay((day) => ({
+                                    ...day,
+                                    soakPlan: { ...day.soakPlan, grainsWashed3Times: Boolean(checked) },
+                                  }))
+                                }
+                              />
+                              <span>Grains washed 3 times</span>
+                            </div>
+                          </div>
+                          <div>
+                            <Label>Checklist notes</Label>
+                            <Textarea
+                              value={selectedDay.soakPlan.notes}
+                              onChange={(e) =>
+                                updateSelectedDay((day) => ({
+                                  ...day,
+                                  soakPlan: { ...day.soakPlan, notes: e.target.value },
+                                }))
+                              }
+                              placeholder="Capture extra preparation notes"
+                            />
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      <Card className="rounded-2xl border p-4">
+                        <CardHeader>
+                          <CardTitle>Planning summary</CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-4 text-sm text-slate-600">
+                          <div className="grid grid-cols-2 gap-3">
+                            <span>Total 30 oz orders</span>
+                            <span className="font-semibold">{selectedDay.orders.reduce((sum, order) => sum + toNumber(order.order30), 0)}</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <span>Total 60 oz orders</span>
+                            <span className="font-semibold">{selectedDay.orders.reduce((sum, order) => sum + toNumber(order.order60), 0)}</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <span>Estimated batch volume</span>
+                            <span className="font-semibold">{selectedDay.orders.reduce((sum, order) => sum + litersFromOrders(order.order30, order.order60), 0).toFixed(1)} L</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <span>Estimated containers</span>
+                            <span className="font-semibold">{`${selectedDay.orders.reduce((sum, order) => sum + toNumber(order.order30), 0)} x 30 oz, ${selectedDay.orders.reduce((sum, order) => sum + toNumber(order.order60), 0)} x 60 oz`}</span>
+                          </div>
+                          {saveMessage ? <div className="rounded-2xl border border-green-200 bg-green-50 p-3 text-sm text-green-700">{saveMessage}</div> : null}
+                        </CardContent>
+                      </Card>
                     </div>
                   </CardContent>
                 </Card>
@@ -1129,27 +1529,631 @@ export default function App() {
           </TabsContent>
 
           <TabsContent value="production">
-            <Card className="rounded-2xl">
-              <CardContent className="p-6 text-slate-600">
-                <p className="font-medium">Production Log - Daily Grinder Batches</p>
-                <p className="text-sm mt-2">
-                  Standard format for rounds, batch timing, water and ice additions, transfer timing, QC metrics (temp, pH), and photos. Select a production day from Orders & Planning to manage production rounds and batch details.
-                </p>
-                <p className="text-sm mt-2">Features: Round plan, grinder batch assignment, start/end times auto-fills water&ice steps, grain transfer times, batter temps, QC notes, and photo capture.</p>
-              </CardContent>
-            </Card>
+            {!selectedDay ? (
+              <Card className="rounded-2xl">
+                <CardContent className="p-6 text-slate-500">Select or create a production day in Orders & Planning to begin logging rounds, timing, QC, and transfer data.</CardContent>
+              </Card>
+            ) : (
+              <div className="space-y-6">
+                <Card className="rounded-2xl">
+                  <CardHeader>
+                    <CardTitle>Production Log - Daily Data Sheet</CardTitle>
+                  </CardHeader>
+                  <CardContent className="grid gap-4 md:grid-cols-3">
+                    <div className="rounded-2xl border p-4 bg-slate-50">
+                      <div className="text-sm text-slate-500">Date</div>
+                      <div className="mt-2 text-lg font-semibold">{selectedDay.date}</div>
+                    </div>
+                    <div className="rounded-2xl border p-4 bg-slate-50">
+                      <div className="text-sm text-slate-500">Rounds</div>
+                      <div className="mt-2 text-lg font-semibold">{selectedDay.rounds.length}</div>
+                    </div>
+                    <div className="rounded-2xl border p-4 bg-slate-50">
+                      <div className="text-sm text-slate-500">Batch slots</div>
+                      <div className="mt-2 text-lg font-semibold">{selectedDay.rounds.flatMap((r) => r.grinders).length}</div>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {selectedDay.rounds.map((round) => (
+                  <Card key={round.id} className="rounded-2xl">
+                    <CardHeader>
+                      <CardTitle>Round {round.roundNo}</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-6">
+                      <div className="grid gap-4 lg:grid-cols-2">
+                        {round.grinders.map((batch) => (
+                          <Card key={batch.id} className="rounded-2xl border bg-slate-50 p-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <div className="text-sm text-slate-500">Grinder {batch.grinderNo}</div>
+                                <div className="text-lg font-semibold">{batch.productCode || 'Batter type not selected'}</div>
+                              </div>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  if (!batch.startedAt) return
+                                  const steps = buildWaterIceStepsFromStart(batch.startedAt)
+                                  updateSelectedDay((day) => ({
+                                    ...day,
+                                    rounds: day.rounds.map((r) =>
+                                      r.id === round.id
+                                        ? {
+                                            ...r,
+                                            grinders: r.grinders.map((g) =>
+                                              g.id === batch.id ? { ...g, waterIceSteps: steps } : g
+                                            ),
+                                          }
+                                        : r
+                                    ),
+                                  }))
+                                }}
+                              >
+                                Auto-fill water steps
+                              </Button>
+                            </div>
+
+                            <div className="grid gap-3">
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                <div>
+                                  <Label>Batter type</Label>
+                                  <Select
+                                    value={batch.productCode}
+                                    onValueChange={(value) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        rounds: day.rounds.map((r) =>
+                                          r.id === round.id
+                                            ? {
+                                                ...r,
+                                                grinders: r.grinders.map((g) =>
+                                                  g.id === batch.id ? { ...g, productCode: value, productName: PRODUCTS.find((p) => p.code === value)?.name || '' } : g
+                                                ),
+                                              }
+                                            : r
+                                        ),
+                                      }))
+                                    }
+                                  >
+                                    <SelectTrigger>
+                                      <SelectValue placeholder="Select batter" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {PRODUCTS.map((product) => (
+                                        <SelectItem key={product.code} value={product.code}>
+                                          {product.name}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <div>
+                                  <Label>Batch label</Label>
+                                  <Input
+                                    value={batch.batchLabel}
+                                    onChange={(e) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        rounds: day.rounds.map((r) =>
+                                          r.id === round.id
+                                            ? {
+                                                ...r,
+                                                grinders: r.grinders.map((g) =>
+                                                  g.id === batch.id ? { ...g, batchLabel: e.target.value } : g
+                                                ),
+                                              }
+                                            : r
+                                        ),
+                                      }))
+                                    }
+                                    placeholder="e.g. RAGI batch 1"
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                <div>
+                                  <Label>Start time</Label>
+                                  <Input
+                                    type="time"
+                                    value={batch.startedAt}
+                                    onChange={(e) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        rounds: day.rounds.map((r) =>
+                                          r.id === round.id
+                                            ? {
+                                                ...r,
+                                                grinders: r.grinders.map((g) =>
+                                                  g.id === batch.id ? { ...g, startedAt: e.target.value } : g
+                                                ),
+                                              }
+                                            : r
+                                        ),
+                                      }))
+                                    }
+                                  />
+                                </div>
+                                <div>
+                                  <Label>End time</Label>
+                                  <Input
+                                    type="time"
+                                    value={batch.endedAt}
+                                    onChange={(e) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        rounds: day.rounds.map((r) =>
+                                          r.id === round.id
+                                            ? {
+                                                ...r,
+                                                grinders: r.grinders.map((g) =>
+                                                  g.id === batch.id ? { ...g, endedAt: e.target.value } : g
+                                                ),
+                                              }
+                                            : r
+                                        ),
+                                      }))
+                                    }
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="rounded-2xl border bg-white p-3">
+                                <div className="text-sm font-semibold mb-3">Water & ice additions</div>
+                                <div className="space-y-3">
+                                  {batch.waterIceSteps.map((step, index) => (
+                                    <div key={index} className="grid gap-3 sm:grid-cols-[120px_1fr] items-center">
+                                      <Input
+                                        type="time"
+                                        value={step.time}
+                                        onChange={(e) =>
+                                          updateSelectedDay((day) => ({
+                                            ...day,
+                                            rounds: day.rounds.map((r) =>
+                                              r.id === round.id
+                                                ? {
+                                                    ...r,
+                                                    grinders: r.grinders.map((g) =>
+                                                      g.id === batch.id
+                                                        ? {
+                                                            ...g,
+                                                            waterIceSteps: g.waterIceSteps.map((item, idx) =>
+                                                              idx === index ? { ...item, time: e.target.value } : item
+                                                            ),
+                                                          }
+                                                        : g
+                                                    ),
+                                                  }
+                                                : r
+                                            ),
+                                          }))
+                                        }
+                                      />
+                                      <div className="text-sm text-slate-600">{step.action}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                <div>
+                                  <Label>Grain transfer start</Label>
+                                  <Input
+                                    type="time"
+                                    value={batch.grainTransferStart}
+                                    onChange={(e) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        rounds: day.rounds.map((r) =>
+                                          r.id === round.id
+                                            ? {
+                                                ...r,
+                                                grinders: r.grinders.map((g) =>
+                                                  g.id === batch.id ? { ...g, grainTransferStart: e.target.value } : g
+                                                ),
+                                              }
+                                            : r
+                                        ),
+                                      }))
+                                    }
+                                  />
+                                </div>
+                                <div>
+                                  <Label>Grain transfer end</Label>
+                                  <Input
+                                    type="time"
+                                    value={batch.grainTransferEnd}
+                                    onChange={(e) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        rounds: day.rounds.map((r) =>
+                                          r.id === round.id
+                                            ? {
+                                                ...r,
+                                                grinders: r.grinders.map((g) =>
+                                                  g.id === batch.id ? { ...g, grainTransferEnd: e.target.value } : g
+                                                ),
+                                              }
+                                            : r
+                                        ),
+                                      }))
+                                    }
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                <div>
+                                  <Label>Batter transfer start</Label>
+                                  <Input
+                                    type="time"
+                                    value={batch.batterTransferStart}
+                                    onChange={(e) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        rounds: day.rounds.map((r) =>
+                                          r.id === round.id
+                                            ? {
+                                                ...r,
+                                                grinders: r.grinders.map((g) =>
+                                                  g.id === batch.id ? { ...g, batterTransferStart: e.target.value } : g
+                                                ),
+                                              }
+                                            : r
+                                        ),
+                                      }))
+                                    }
+                                  />
+                                </div>
+                                <div>
+                                  <Label>Batter transfer end</Label>
+                                  <Input
+                                    type="time"
+                                    value={batch.batterTransferEnd}
+                                    onChange={(e) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        rounds: day.rounds.map((r) =>
+                                          r.id === round.id
+                                            ? {
+                                                ...r,
+                                                grinders: r.grinders.map((g) =>
+                                                  g.id === batch.id ? { ...g, batterTransferEnd: e.target.value } : g
+                                                ),
+                                              }
+                                            : r
+                                        ),
+                                      }))
+                                    }
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="grid gap-3 sm:grid-cols-3">
+                                <div>
+                                  <Label>Actual yield (L)</Label>
+                                  <Input
+                                    type="number"
+                                    value={batch.actualYieldLiters}
+                                    onChange={(e) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        rounds: day.rounds.map((r) =>
+                                          r.id === round.id
+                                            ? {
+                                                ...r,
+                                                grinders: r.grinders.map((g) =>
+                                                  g.id === batch.id ? { ...g, actualYieldLiters: e.target.value } : g
+                                                ),
+                                              }
+                                            : r
+                                        ),
+                                      }))
+                                    }
+                                  />
+                                </div>
+                                <div>
+                                  <Label>Wastage (L)</Label>
+                                  <Input
+                                    type="number"
+                                    value={batch.wastageLiters}
+                                    onChange={(e) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        rounds: day.rounds.map((r) =>
+                                          r.id === round.id
+                                            ? {
+                                                ...r,
+                                                grinders: r.grinders.map((g) =>
+                                                  g.id === batch.id ? { ...g, wastageLiters: e.target.value } : g
+                                                ),
+                                              }
+                                            : r
+                                        ),
+                                      }))
+                                    }
+                                  />
+                                </div>
+                                <div>
+                                  <Label>Expected yield (L)</Label>
+                                  <Input value={batch.expectedYieldLiters} disabled />
+                                </div>
+                              </div>
+
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                <div>
+                                  <Label>Batter temperature</Label>
+                                  <Input
+                                    value={batch.batterTemp}
+                                    onChange={(e) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        rounds: day.rounds.map((r) =>
+                                          r.id === round.id
+                                            ? {
+                                                ...r,
+                                                grinders: r.grinders.map((g) =>
+                                                  g.id === batch.id ? { ...g, batterTemp: e.target.value } : g
+                                                ),
+                                              }
+                                            : r
+                                        ),
+                                      }))
+                                    }
+                                  />
+                                </div>
+                                <div>
+                                  <Label>Room temperature</Label>
+                                  <Input
+                                    value={batch.roomTemp}
+                                    onChange={(e) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        rounds: day.rounds.map((r) =>
+                                          r.id === round.id
+                                            ? {
+                                                ...r,
+                                                grinders: r.grinders.map((g) =>
+                                                  g.id === batch.id ? { ...g, roomTemp: e.target.value } : g
+                                                ),
+                                              }
+                                            : r
+                                        ),
+                                      }))
+                                    }
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                <div>
+                                  <Label>pH value</Label>
+                                  <Input
+                                    value={batch.ph}
+                                    onChange={(e) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        rounds: day.rounds.map((r) =>
+                                          r.id === round.id
+                                            ? {
+                                                ...r,
+                                                grinders: r.grinders.map((g) =>
+                                                  g.id === batch.id ? { ...g, ph: e.target.value } : g
+                                                ),
+                                              }
+                                            : r
+                                        ),
+                                      }))
+                                    }
+                                  />
+                                </div>
+                                <div>
+                                  <Label>QC notes</Label>
+                                  <Textarea
+                                    value={batch.qcNotes}
+                                    onChange={(e) =>
+                                      updateSelectedDay((day) => ({
+                                        ...day,
+                                        rounds: day.rounds.map((r) =>
+                                          r.id === round.id
+                                            ? {
+                                                ...r,
+                                                grinders: r.grinders.map((g) =>
+                                                  g.id === batch.id ? { ...g, qcNotes: e.target.value } : g
+                                                ),
+                                              }
+                                            : r
+                                        ),
+                                      }))
+                                    }
+                                    placeholder="QC observations"
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          </Card>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <Button onClick={saveProductionDay} disabled={saveLoading} className="rounded-2xl">
+                    {saveLoading ? 'Saving…' : 'Save Production Log'}
+                  </Button>
+                  {saveMessage ? <div className="text-sm text-slate-600">{saveMessage}</div> : null}
+                </div>
+              </div>
+            )}
           </TabsContent>
 
           <TabsContent value="packaging">
-            <Card className="rounded-2xl">
-              <CardContent className="p-6 text-slate-600">
-                <p className="font-medium">Packaging, Dispatch & Production Output</p>
-                <p className="text-sm mt-2">
-                  Machine setup times, issues (splashing, washer problems, caps), packaged unit counts (30 oz & 60 oz), and automatic inventory deduction.
-                </p>
-                <p className="text-sm mt-2">Tracks: setup time, machine issues, photos, notes, plus automatic inventory deduction preview for ingredients, containers, lids, and cases.</p>
-              </CardContent>
-            </Card>
+            {!selectedDay ? (
+              <Card className="rounded-2xl">
+                <CardContent className="p-6 text-slate-500">Select a production day in Orders & Planning to log packaging setup, issues, and output records.</CardContent>
+              </Card>
+            ) : (
+              <Card className="rounded-2xl">
+                <CardHeader className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <CardTitle>Packaging, Dispatch & Production Output</CardTitle>
+                    <p className="text-sm text-slate-500">
+                      Track packaging setup times, machine issues, equipment checks, and output notes for the selected production day.
+                    </p>
+                  </div>
+                  <Button onClick={() => saveProductionDay({ completeInventory: true })} disabled={saveLoading} className="rounded-2xl">
+                    {saveLoading ? 'Saving…' : 'Save Packaging & Deduct Inventory'}
+                  </Button>
+                </CardHeader>
+                <CardContent className="grid gap-6 lg:grid-cols-2">
+                  <div className="space-y-4">
+                    <div>
+                      <Label>Packaging setup start</Label>
+                      <Input
+                        type="time"
+                        value={selectedDay.packaging.setupStart}
+                        onChange={(e) =>
+                          updateSelectedDay((day) => ({
+                            ...day,
+                            packaging: { ...day.packaging, setupStart: e.target.value },
+                          }))
+                        }
+                      />
+                    </div>
+                    <div>
+                      <Label>Packaging setup end</Label>
+                      <Input
+                        type="time"
+                        value={selectedDay.packaging.setupEnd}
+                        onChange={(e) =>
+                          updateSelectedDay((day) => ({
+                            ...day,
+                            packaging: { ...day.packaging, setupEnd: e.target.value },
+                          }))
+                        }
+                      />
+                    </div>
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-3">
+                        <Checkbox
+                          checked={selectedDay.packaging.splashIssue}
+                          onCheckedChange={(checked) =>
+                            updateSelectedDay((day) => ({
+                              ...day,
+                              packaging: { ...day.packaging, splashIssue: Boolean(checked) },
+                            }))
+                          }
+                        />
+                        <span>Splash issue observed</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <Checkbox
+                          checked={selectedDay.packaging.greaseApplied}
+                          onCheckedChange={(checked) =>
+                            updateSelectedDay((day) => ({
+                              ...day,
+                              packaging: { ...day.packaging, greaseApplied: Boolean(checked) },
+                            }))
+                          }
+                        />
+                        <span>Grease applied correctly</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <Checkbox
+                          checked={selectedDay.packaging.washerChanged}
+                          onCheckedChange={(checked) =>
+                            updateSelectedDay((day) => ({
+                              ...day,
+                              packaging: { ...day.packaging, washerChanged: Boolean(checked) },
+                            }))
+                          }
+                        />
+                        <span>Washer changed</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <Checkbox
+                          checked={selectedDay.packaging.waterAccessIssue}
+                          onCheckedChange={(checked) =>
+                            updateSelectedDay((day) => ({
+                              ...day,
+                              packaging: { ...day.packaging, waterAccessIssue: Boolean(checked) },
+                            }))
+                          }
+                        />
+                        <span>Water access issue</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <Label>Machine issues</Label>
+                      <Textarea
+                        value={selectedDay.packaging.machineIssues}
+                        onChange={(e) =>
+                          updateSelectedDay((day) => ({
+                            ...day,
+                            packaging: { ...day.packaging, machineIssues: e.target.value },
+                          }))
+                        }
+                        placeholder="Describe any machine issues during packaging"
+                      />
+                    </div>
+                    <div>
+                      <Label>General packaging notes</Label>
+                      <Textarea
+                        value={selectedDay.packaging.notes}
+                        onChange={(e) =>
+                          updateSelectedDay((day) => ({
+                            ...day,
+                            packaging: { ...day.packaging, notes: e.target.value },
+                          }))
+                        }
+                        placeholder="Notes for dispatch, pack counts, or cleanup"
+                      />
+                    </div>
+                    {saveMessage ? <div className="rounded-2xl border border-green-200 bg-green-50 p-3 text-sm text-green-700">{saveMessage}</div> : null}
+                  </div>
+                </CardContent>
+
+                <CardContent className="grid gap-4 lg:grid-cols-3 mt-4">
+                  <div className="rounded-2xl border bg-slate-50 p-4">
+                    <div className="text-sm text-slate-500">Packaging deduction preview</div>
+                    <div className="mt-3 space-y-2 text-sm text-slate-700">
+                      <div className="flex justify-between"><span>30 oz containers</span><span className="font-semibold">{packagingUsage?.containers30 ?? 0}</span></div>
+                      <div className="flex justify-between"><span>60 oz containers</span><span className="font-semibold">{packagingUsage?.containers60 ?? 0}</span></div>
+                      <div className="flex justify-between"><span>30 oz lids</span><span className="font-semibold">{packagingUsage?.lids30 ?? 0}</span></div>
+                      <div className="flex justify-between"><span>60 oz lids</span><span className="font-semibold">{packagingUsage?.lids60 ?? 0}</span></div>
+                      <div className="flex justify-between"><span>30 oz cases</span><span className="font-semibold">{packagingUsage?.cases30 ?? 0}</span></div>
+                      <div className="flex justify-between"><span>60 oz cases</span><span className="font-semibold">{packagingUsage?.cases60 ?? 0}</span></div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border bg-slate-50 p-4">
+                    <div className="text-sm text-slate-500">Inventory after deduction</div>
+                    <div className="mt-3 space-y-2 text-sm text-slate-700">
+                      <div className="flex justify-between"><span>30 oz containers left</span><span className="font-semibold">{inventoryAfterPackaging?.containers30 ?? appState.inventory.containers30}</span></div>
+                      <div className="flex justify-between"><span>60 oz containers left</span><span className="font-semibold">{inventoryAfterPackaging?.containers60 ?? appState.inventory.containers60}</span></div>
+                      <div className="flex justify-between"><span>30 oz lids left</span><span className="font-semibold">{inventoryAfterPackaging?.lids30 ?? appState.inventory.lids30}</span></div>
+                      <div className="flex justify-between"><span>60 oz lids left</span><span className="font-semibold">{inventoryAfterPackaging?.lids60 ?? appState.inventory.lids60}</span></div>
+                      <div className="flex justify-between"><span>30 oz cases left</span><span className="font-semibold">{inventoryAfterPackaging?.cases30 ?? appState.inventory.cases30}</span></div>
+                      <div className="flex justify-between"><span>60 oz cases left</span><span className="font-semibold">{inventoryAfterPackaging?.cases60 ?? appState.inventory.cases60}</span></div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border bg-slate-50 p-4">
+                    <div className="text-sm text-slate-500">Inventory deduction notes</div>
+                    <div className="mt-3 text-sm text-slate-700 space-y-3">
+                      <p>This preview shows the inventory that will be deducted when packaging is saved.</p>
+                      <p>Inventory deduction only applies once per production day.</p>
+                      {selectedDay.inventoryDeducted ? <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">Already deducted for this day.</div> : null}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
           </TabsContent>
 
           <TabsContent value="inventory">
