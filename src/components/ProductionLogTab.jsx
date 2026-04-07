@@ -23,7 +23,7 @@ export default function ProductionLogTab({
 }) {
   if (!selectedDay) {
     return (
-      <Card className="rounded-2xl">
+      <Card className="glass-panel rounded-[1.6rem]">
         <CardContent className="p-6 text-slate-500">Select or create a production day in Orders & Planning to begin logging rounds, timing, QC, and transfer data.</CardContent>
       </Card>
     )
@@ -32,12 +32,15 @@ export default function ProductionLogTab({
   const slotCount = selectedDay.rounds[0]?.grinders?.length || appState.company.grinders
 
   return (
-    <div className="space-y-6">
-      <Card className="rounded-2xl">
+    <div className="section-grid space-y-6">
+      <Card className="glass-panel rounded-[1.7rem]">
         <CardHeader className="flex flex-wrap items-start justify-between gap-3">
-          <CardTitle>Production Log - Daily Data Sheet</CardTitle>
+          <div>
+            <CardTitle>Production Log - Daily Data Sheet</CardTitle>
+            <div className="mt-1 text-sm text-slate-500">Edit the full day sheet by round, machine, transfer timing, and QC without losing the production structure.</div>
+          </div>
           <div className="flex flex-wrap items-center gap-3">
-            <Button variant="outline" onClick={onExport} className="rounded-2xl">
+            <Button variant="outline" onClick={onExport} className="rounded-2xl border-white/70 bg-white/75">
               Export XLS
             </Button>
             <Button onClick={saveProductionDay} disabled={saveLoading} className="rounded-2xl">
@@ -46,7 +49,7 @@ export default function ProductionLogTab({
           </div>
         </CardHeader>
         <CardContent className="grid gap-4 md:grid-cols-3">
-          <div className="rounded-2xl border p-4 bg-slate-50">
+          <div className="soft-panel rounded-[1.4rem] p-4">
             <Label>Date</Label>
             <Input
               type="date"
@@ -60,7 +63,7 @@ export default function ProductionLogTab({
               }
             />
           </div>
-          <div className="rounded-2xl border p-4 bg-slate-50">
+          <div className="soft-panel rounded-[1.4rem] p-4">
             <Label>Rounds</Label>
             <Select
               value={String(selectedDay.rounds.length)}
@@ -82,7 +85,7 @@ export default function ProductionLogTab({
               </SelectContent>
             </Select>
           </div>
-          <div className="rounded-2xl border p-4 bg-slate-50">
+          <div className="soft-panel rounded-[1.4rem] p-4">
             <Label>Batch slots per round</Label>
             <Select
               value={String(slotCount)}
@@ -110,13 +113,18 @@ export default function ProductionLogTab({
         const waterSteps = buildWaterIceStepsFromStart(round.startedAt || '')
 
         return (
-          <Card key={round.id} className="rounded-2xl">
+          <Card key={round.id} className="glass-panel rounded-[1.7rem]">
             <CardHeader>
-              <CardTitle>Round {round.roundNo}</CardTitle>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <CardTitle>Round {round.roundNo}</CardTitle>
+                <div className="rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-emerald-800">
+                  {round.grinders.length} slots
+                </div>
+              </div>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="grid gap-4 lg:grid-cols-[1.35fr_0.85fr]">
-                <div className="rounded-2xl border bg-slate-50 p-4">
+                <div className="soft-panel rounded-[1.4rem] p-4">
                   <div className="text-sm font-semibold">Machines</div>
                   <div className="mt-2 text-sm text-slate-600">{machineList}</div>
                   <div className="mt-4 overflow-x-auto">
@@ -193,7 +201,7 @@ export default function ProductionLogTab({
                   </div>
                 </div>
 
-                <div className="rounded-2xl border bg-slate-50 p-4">
+                <div className="soft-panel rounded-[1.4rem] p-4">
                   <div className="text-sm font-semibold">Batch Timing</div>
                   <div className="mt-4 grid gap-4">
                     <div>
@@ -248,7 +256,7 @@ export default function ProductionLogTab({
                 </div>
               </div>
 
-              <div className="rounded-2xl border bg-white p-4">
+              <div className="rounded-[1.4rem] border border-white/55 bg-white/78 p-4">
                 <div className="text-sm font-semibold">Process Steps (Water Addition Timeline)</div>
                 <Table className="mt-3">
                   <TableHeader>
@@ -273,7 +281,7 @@ export default function ProductionLogTab({
               </div>
 
               <div className="grid gap-4 xl:grid-cols-2">
-                <div className="rounded-2xl border bg-white p-4">
+                <div className="rounded-[1.4rem] border border-white/55 bg-white/78 p-4">
                   <div className="text-sm font-semibold">Time to Transfer to Grinder</div>
                   <Table className="mt-3">
                     <TableHeader>
@@ -335,7 +343,7 @@ export default function ProductionLogTab({
                   </Table>
                 </div>
 
-                <div className="rounded-2xl border bg-white p-4">
+                <div className="rounded-[1.4rem] border border-white/55 bg-white/78 p-4">
                   <div className="text-sm font-semibold">Time to Transfer to Fermenter</div>
                   <Table className="mt-3">
                     <TableHeader>
@@ -398,7 +406,7 @@ export default function ProductionLogTab({
                 </div>
               </div>
 
-              <div className="rounded-2xl border bg-white p-4">
+              <div className="rounded-[1.4rem] border border-white/55 bg-white/78 p-4">
                 <div className="text-sm font-semibold">Batch Observation Table</div>
                 <div className="overflow-x-auto">
                   <Table className="mt-3">
@@ -529,7 +537,7 @@ export default function ProductionLogTab({
       })}
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="text-sm text-slate-600">
+        <div className="rounded-full border border-white/60 bg-white/70 px-4 py-2 text-sm text-slate-600 shadow-sm">
           {saveMessage || `Default setup: ${appState.company.defaultRoundsPerDay} rounds, ${slotCount} slots per round.`}
         </div>
       </div>

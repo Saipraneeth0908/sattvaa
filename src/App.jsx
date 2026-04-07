@@ -408,16 +408,16 @@ function parseJson(value) {
 
 function MetricCard({ title, value, subtitle, icon: Icon }) {
   return (
-    <Card className="rounded-2xl shadow-sm">
+    <Card className="metric-glow rounded-[1.6rem] border-white/55 bg-white/80">
       <CardContent className="p-4">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="text-sm text-slate-500">{title}</div>
-            <div className="text-2xl font-bold mt-1">{value}</div>
-            {subtitle ? <div className="text-xs text-slate-500 mt-1">{subtitle}</div> : null}
+            <div className="text-sm font-medium text-slate-500">{title}</div>
+            <div className="mt-1 text-2xl font-bold tracking-[-0.02em] text-slate-900">{value}</div>
+            {subtitle ? <div className="mt-1 text-xs text-slate-500">{subtitle}</div> : null}
           </div>
-          <div className="p-2 rounded-xl bg-slate-100">
-            <Icon className="w-5 h-5" />
+          <div className="rounded-2xl border border-emerald-100 bg-emerald-50/90 p-2.5 text-emerald-800 shadow-sm">
+            <Icon className="h-5 w-5" />
           </div>
         </div>
       </CardContent>
@@ -462,9 +462,9 @@ class AppErrorBoundary extends React.Component {
 
 function SectionTitle({ title, subtitle, action }) {
   return (
-    <div className="flex items-center justify-between gap-3 mb-4">
+    <div className="mb-4 flex items-center justify-between gap-3">
       <div>
-        <div className="text-lg font-semibold">{title}</div>
+        <div className="text-lg font-semibold tracking-[-0.02em] text-slate-900">{title}</div>
         {subtitle ? <div className="text-sm text-slate-500">{subtitle}</div> : null}
       </div>
       {action}
@@ -474,17 +474,20 @@ function SectionTitle({ title, subtitle, action }) {
 
 function AppHeader({ userEmail, onSignOut, companyName }) {
   return (
-    <div className="sticky top-0 z-20 bg-white/90 backdrop-blur border-b">
-      <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+    <div className="sticky top-0 z-20 border-b border-white/40 bg-[#f8f4ec]/82 backdrop-blur-xl">
+      <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4">
         <div>
-          <div className="text-xl md:text-2xl font-bold flex items-center gap-2">
-            <Factory className="w-6 h-6" /> {companyName}
+          <div className="flex items-center gap-3 text-xl font-bold tracking-[-0.03em] text-slate-900 md:text-3xl">
+            <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-2 text-emerald-800 shadow-sm">
+              <Factory className="h-5 w-5 md:h-6 md:w-6" />
+            </div>
+            <div>{companyName}</div>
           </div>
-          <div className="text-sm text-slate-600">Mobile-friendly production, QC, packaging, inventory, and batch tracking for 5 millet batter types</div>
+          <div className="mt-1 text-sm text-slate-600">Production planning, QC, packaging, inventory, and daily log tracking in one calm workspace.</div>
         </div>
         <div className="flex items-center gap-3">
-          <div className="text-sm text-slate-600">{userEmail}</div>
-          <Button variant="outline" onClick={onSignOut} className="rounded-2xl">
+          <div className="hidden rounded-full border border-white/60 bg-white/65 px-4 py-2 text-sm text-slate-600 shadow-sm md:block">{userEmail}</div>
+          <Button variant="outline" onClick={onSignOut} className="rounded-2xl border-white/70 bg-white/80">
             <LogOut className="mr-2 h-4 w-4" /> Sign Out
           </Button>
         </div>
@@ -1039,17 +1042,17 @@ function DashboardTab({ appState, selectedDayId }) {
 
 function AuthToggle({ authMode, setAuthMode }) {
   return (
-    <div className="flex rounded-3xl border border-border bg-muted p-1">
+    <div className="flex rounded-3xl border border-white/60 bg-white/60 p-1 shadow-sm">
       <button
         type="button"
-        className={`flex-1 rounded-3xl py-2 text-sm font-semibold transition ${authMode === 'login' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:bg-white/80'}`}
+        className={`flex-1 rounded-3xl py-2 text-sm font-semibold transition ${authMode === 'login' ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:bg-white/80'}`}
         onClick={() => setAuthMode('login')}
       >
         Login
       </button>
       <button
         type="button"
-        className={`flex-1 rounded-3xl py-2 text-sm font-semibold transition ${authMode === 'register' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:bg-white/80'}`}
+        className={`flex-1 rounded-3xl py-2 text-sm font-semibold transition ${authMode === 'register' ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:bg-white/80'}`}
         onClick={() => setAuthMode('register')}
       >
         Register
@@ -1070,7 +1073,7 @@ export default function App() {
 
   const [appState, setAppState] = useState({
     company: {
-      name: 'Batters Production LLC',
+      name: 'Sattva production app',
       brand: 'Sattva Idly & Dosa Batter',
       grinders: 3,
       litersPerBatch: 20,
@@ -1573,17 +1576,17 @@ export default function App() {
 
   if (!session) {
     return (
-      <div className="min-h-screen bg-background px-4 py-10 text-foreground">
-        <div className="mx-auto max-w-2xl rounded-3xl border border-border bg-card p-8 shadow-sm">
-          <div className="mb-6 rounded-3xl border border-border bg-muted p-5 text-center">
+      <div className="app-shell min-h-screen px-4 py-10 text-foreground">
+        <div className="glass-panel mx-auto max-w-2xl rounded-[2rem] p-8">
+          <div className="soft-panel mb-6 rounded-[1.75rem] p-5 text-center">
             <div className="flex items-center justify-center gap-3 text-sm font-semibold uppercase tracking-[0.28em] text-muted-foreground">
-              <Sparkles className="h-4 w-4" /> Batters Production
+              <Sparkles className="h-4 w-4" /> Sattva production app
             </div>
           </div>
           <div className="mb-8 space-y-4 text-center">
-            <h1 className="text-4xl font-semibold">Sattva Idly & Dosa Batter</h1>
+            <h1 className="text-4xl font-semibold tracking-[-0.04em] text-slate-900">Sattva production app</h1>
             <p className="text-sm leading-7 text-muted-foreground">
-              Professional production management system. Automated daily production sheets, batch tracking, QC, packaging, inventory, recipes, and multi-user realtime sync.
+              Professional daily production management for batter planning, batch timing, QC, packaging, inventory, and records that stay easy to read under pressure.
             </p>
           </div>
           <AuthToggle authMode={authMode} setAuthMode={setAuthMode} />
@@ -1637,12 +1640,12 @@ export default function App() {
 
   return (
     <AppErrorBoundary>
-      <div className="min-h-screen bg-slate-50 text-slate-900">
+      <div className="app-shell min-h-screen text-slate-900">
         <AppHeader userEmail={user?.email || 'Unknown'} onSignOut={signOut} companyName={appState.company.name} />
 
-        <div className="max-w-7xl mx-auto px-4 py-6">
-          <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="flex flex-wrap h-auto gap-2 rounded-2xl bg-white p-2 border w-full justify-start overflow-x-auto">
+        <div className="mx-auto max-w-7xl px-4 py-6">
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="section-grid space-y-6">
+          <TabsList className="glass-panel flex h-auto w-full justify-start gap-2 overflow-x-auto rounded-[1.6rem] p-2">
             <TabsTrigger value="dashboard" className="rounded-xl">
               Dashboard
             </TabsTrigger>
